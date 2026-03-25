@@ -55,7 +55,9 @@
   function sendPayload(payload) {
     var endpoint = getEndpoint();
     if (!endpoint) {
-      return Promise.reject(new Error("NO_ENDPOINT"));
+      var ne = new Error("NO_ENDPOINT");
+      ne.code = "NO_ENDPOINT";
+      return Promise.reject(ne);
     }
     return fetch(endpoint, {
       method: "POST",
@@ -71,9 +73,35 @@
         _replyto: payload.email,
       }),
     }).then(function (res) {
-      if (!res.ok) throw new Error("HTTP " + res.status);
-      return res;
+      if (!res.ok) {
+        var err = new Error("HTTP " + res.status);
+        err.status = res.status;
+        return Promise.reject(err);
+      }
+      return res.json().catch(function () {
+        return {};
+      });
     });
+  }
+
+  function isValidEmail(s) {
+    if (!s || s.length > 254) return false;
+    return /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(s);
+  }
+
+  function clearFieldInvalid(form) {
+    if (!form) return;
+    form.querySelectorAll(".contact-form__input--invalid").forEach(function (el) {
+      el.classList.remove("contact-form__input--invalid");
+      el.removeAttribute("aria-invalid");
+    });
+  }
+
+  function clearFormStatus(el) {
+    if (!el) return;
+    el.hidden = true;
+    el.textContent = "";
+    el.className = "contact-form-status";
   }
 
   function updatePendingUi() {
@@ -130,7 +158,11 @@
 
   function openModal() {
     var modal = document.getElementById("contact-request-modal");
+    var form = document.getElementById("contact-request-form");
+    var statusEl = document.getElementById("contact-form-status");
     if (!modal) return;
+    clearFormStatus(statusEl);
+    clearFieldInvalid(form);
     modal.hidden = false;
     modal.setAttribute("aria-hidden", "false");
     document.body.style.overflow = "hidden";
@@ -143,7 +175,11 @@
 
   function closeModal() {
     var modal = document.getElementById("contact-request-modal");
+    var form = document.getElementById("contact-request-form");
+    var statusEl = document.getElementById("contact-form-status");
     if (!modal) return;
+    clearFormStatus(statusEl);
+    clearFieldInvalid(form);
     modal.hidden = true;
     modal.setAttribute("aria-hidden", "true");
     document.body.style.overflow = "";
@@ -176,14 +212,24 @@
 
     if (!form) return;
 
+    form.addEventListener("input", function () {
+      clearFieldInvalid(form);
+      if (statusEl && !statusEl.hidden) {
+        if (
+          statusEl.className.indexOf("contact-form-status--error") !== -1
+        ) {
+          clearFormStatus(statusEl);
+        }
+      }
+    });
+
     form.addEventListener("submit", function (e) {
       e.preventDefault();
-      if (statusEl) {
-        statusEl.hidden = true;
-        statusEl.textContent = "";
-      }
+      clearFormStatus(statusEl);
+      clearFieldInvalid(form);
 
       var fd = new FormData(form);
+      var emailInput = form.querySelector('input[name="email"]');
       var payload = {
         name: (fd.get("name") || "").toString().trim(),
         email: (fd.get("email") || "").toString().trim(),
@@ -191,7 +237,33 @@
       };
 
       if (!payload.name || !payload.email || !payload.message) {
-        showFormStatus(statusEl, "error", "Please fill in name, email, and message.");
+        showFormStatus(
+          statusEl,
+          "error",
+          "Please fill in name, email, and message."
+        );
+        return;
+      }
+
+      if (!isValidEmail(payload.email)) {
+        if (emailInput) {
+          emailInput.classList.add("contact-form__input--invalid");
+          emailInput.setAttribute("aria-invalid", "true");
+        }
+        showFormStatus(
+          statusEl,
+          "error",
+          "Please enter a valid email address (e.g. name@example.com)."
+        );
+        return;
+      }
+
+      if (payload.message.length < 3) {
+        showFormStatus(
+          statusEl,
+          "error",
+          "Message is too short — please write at least a few characters."
+        );
         return;
       }
 
@@ -201,6 +273,7 @@
         enqueue({ payload: payload });
         showFormStatus(statusEl, "pending", msg);
         form.reset();
+        clearFieldInvalid(form);
         updatePendingUi();
       }
 
@@ -226,8 +299,24 @@
             "Thank you — your message was sent. I will get back to you soon."
           );
           form.reset();
+          clearFieldInvalid(form);
         },
-        function () {
+        function (err) {
+          var st = err && err.status;
+          if (err && err.code === "NO_ENDPOINT") {
+            savedLocalOnly(
+              "No server URL configured — saved only in this browser."
+            );
+            return;
+          }
+          if (st >= 400 && st < 500) {
+            showFormStatus(
+              statusEl,
+              "error",
+              "The form could not be accepted. Check your email and message, then try again."
+            );
+            return;
+          }
           enqueue({ payload: payload });
           showFormStatus(
             statusEl,
